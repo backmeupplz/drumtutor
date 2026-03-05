@@ -1,0 +1,30 @@
+@import "tailwindcss";
+
+:root {
+  --color-bg: #0a0a0a;
+  --color-surface: #141414;
+  --color-border: #2a2a2a;
+  --color-text: #e0e0e0;
+  --color-text-dim: #888;
+  --color-accent: #f59e0b;
+  --color-green: #22c55e;
+  --color-yellow: #eab308;
+  --color-orange: #f97316;
+  --color-red: #ef4444;
+  --color-blue: #3b82f6;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+  overflow: hidden;
+  height: 100vh;
+}
+
+#app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}

@@ -1,0 +1,23 @@
+{
+  "name": "drumtutor",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.2.1",
+    "@tonejs/midi": "^2.0.28",
+    "preact": "^10.27.2",
+    "tailwindcss": "^4.2.1"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.2",
+    "@types/node": "^24.10.1",
+    "typescript": "~5.9.3",
+    "vite": "^7.3.1"
+  }
+}
