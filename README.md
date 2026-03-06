@@ -2,7 +2,7 @@
 
 Interactive web-based drum tutor. Upload any MIDI file, listen to the drum part, then practice along with real-time hit detection and feedback. Connect a MIDI drum pad or use your keyboard.
 
-**[Try it live](https://borodutch.github.io/drumtutor/)**
+**[Try it live](https://backmeupplz.github.io/drumtutor/)**
 
 ## Features
 
