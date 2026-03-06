@@ -92,6 +92,7 @@ export class AudioEngine {
   private kit: Map<number, NoteGroup> = new Map();
   private voices: Voice[] = [];
   private masterGain: GainNode;
+  private scheduledOscillators: OscillatorNode[] = [];
   loaded = false;
 
   constructor() {
@@ -210,6 +211,20 @@ export class AudioEngine {
     gain.connect(this.masterGain);
     osc.start(time);
     osc.stop(time + 0.03);
+
+    this.scheduledOscillators.push(osc);
+    osc.onended = () => {
+      const idx = this.scheduledOscillators.indexOf(osc);
+      if (idx >= 0) this.scheduledOscillators.splice(idx, 1);
+    };
+  }
+
+  /** Cancel all scheduled metronome clicks */
+  cancelScheduled(): void {
+    for (const osc of this.scheduledOscillators) {
+      try { osc.stop(); } catch {}
+    }
+    this.scheduledOscillators = [];
   }
 
   /** Schedule a sample trigger at a specific AudioContext time */

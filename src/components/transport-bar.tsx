@@ -1,10 +1,14 @@
+import type { LearningState } from "../engine/types";
+
 interface Props {
   currentBpm: number;
   targetBpm: number;
   segmentIndex: number;
   totalSegments: number;
   metronomeEnabled: boolean;
+  state: LearningState;
   onToggleMetronome: () => void;
+  onReset: () => void;
 }
 
 export function TransportBar({
@@ -13,8 +17,12 @@ export function TransportBar({
   segmentIndex,
   totalSegments,
   metronomeEnabled,
+  state,
   onToggleMetronome,
+  onReset,
 }: Props) {
+  const showReset = state !== "IDLE" && state !== "SONG_LOADED";
+
   return (
     <div class="flex items-center gap-4 px-4 py-2 bg-[#141414] border-b border-[#2a2a2a] text-sm">
       <span class="text-[#f59e0b] font-bold">drumtutor</span>
@@ -42,6 +50,16 @@ export function TransportBar({
       >
         {metronomeEnabled ? "\u{1F50A}" : "\u{1F507}"}
       </button>
+
+      {showReset && (
+        <button
+          class="px-3 py-1 bg-[#2a2a2a] text-[#888] rounded text-xs hover:bg-[#333] hover:text-[#e0e0e0]"
+          onClick={onReset}
+          title="Reset — stop all audio and return to song selection"
+        >
+          Reset
+        </button>
+      )}
     </div>
   );
 }

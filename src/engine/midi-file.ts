@@ -5,6 +5,24 @@
 import { Midi } from "@tonejs/midi";
 import type { DrumTrack, MidiNote } from "./types";
 
+/**
+ * Fix common MIDI mapping issue:
+ * - If file has many note 44 (pedal HH) but no note 42 (closed HH), remap 44→42.
+ *   Many MIDI files misuse pedal HH for the main closed hi-hat pattern.
+ */
+function fixHiHatMapping(notes: MidiNote[]): MidiNote[] {
+  const count42 = notes.filter((n) => n.note === 42).length;
+  const count44 = notes.filter((n) => n.note === 44).length;
+
+  if (count42 === 0 && count44 > 20) {
+    return notes.map((n) =>
+      n.note === 44 ? { ...n, note: 42 } : n
+    );
+  }
+
+  return notes;
+}
+
 /** Parse a MIDI file from an ArrayBuffer */
 export function parseMidiFile(buffer: ArrayBuffer): DrumTrack {
   const midi = new Midi(buffer);
@@ -23,7 +41,7 @@ export function parseMidiFile(buffer: ArrayBuffer): DrumTrack {
     throw new Error("No drum track found in MIDI file");
   }
 
-  const notes: MidiNote[] = drumTrack.notes
+  let notes: MidiNote[] = drumTrack.notes
     .filter((n) => n.midi >= 21 && n.midi <= 81)
     .map((n) => ({
       note: n.midi,
@@ -32,6 +50,10 @@ export function parseMidiFile(buffer: ArrayBuffer): DrumTrack {
       ticks: n.ticks,
     }))
     .sort((a, b) => a.time - b.time);
+
+  // Auto-fix: if file uses note 44 (pedal HH) but has no note 42 (closed HH),
+  // remap 44→42. Many MIDI files misuse 44 for the main hi-hat pattern.
+  notes = fixHiHatMapping(notes);
 
   // Get BPM from tempo map
   const bpm = midi.header.tempos.length > 0 ? midi.header.tempos[0].bpm : 120;

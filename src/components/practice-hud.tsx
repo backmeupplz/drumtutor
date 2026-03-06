@@ -5,39 +5,32 @@ interface Props {
   statusMessage: string;
   accuracy: number | null;
   streak: number;
+  listenPaused?: boolean;
   onStart: () => void;
   onPlay: () => void;
   onNext: () => void;
   onListen: () => void;
-  onStop: () => void;
+  onListenSegment: () => void;
+  onPauseListen: () => void;
+  onResumeListen: () => void;
+  onStopListen: () => void;
 }
 
-function stateLabel(state: LearningState): string {
+function stateLabel(state: LearningState, paused?: boolean): string {
+  if (state === "LISTENING" && paused) return "Paused";
   switch (state) {
-    case "IDLE":
-      return "Idle";
-    case "SONG_LOADED":
-      return "Ready";
-    case "LISTENING":
-      return "Listening";
-    case "SEGMENT_PREVIEW":
-      return "Preview";
-    case "PREP_COUNT":
-      return "Count In";
-    case "PLAYING":
-      return "Playing";
-    case "EVALUATE":
-      return "Result";
-    case "NEXT_SEGMENT":
-      return "Next";
-    case "COMBINE":
-      return "Combine";
-    case "EXAM_WITH_CLICK":
-      return "Exam (click)";
-    case "EXAM_WITHOUT_CLICK":
-      return "Exam (no click)";
-    case "SONG_COMPLETE":
-      return "Complete!";
+    case "IDLE": return "Idle";
+    case "SONG_LOADED": return "Ready";
+    case "LISTENING": return "Listening";
+    case "SEGMENT_PREVIEW": return "Preview";
+    case "PREP_COUNT": return "Count In";
+    case "PLAYING": return "Playing";
+    case "EVALUATE": return "Result";
+    case "NEXT_SEGMENT": return "Next";
+    case "COMBINE": return "Combine";
+    case "EXAM_WITH_CLICK": return "Exam (click)";
+    case "EXAM_WITHOUT_CLICK": return "Exam (no click)";
+    case "SONG_COMPLETE": return "Complete!";
   }
 }
 
@@ -46,11 +39,15 @@ export function PracticeHud({
   statusMessage,
   accuracy,
   streak,
+  listenPaused,
   onStart,
   onPlay,
   onNext,
   onListen,
-  onStop,
+  onListenSegment,
+  onPauseListen,
+  onResumeListen,
+  onStopListen,
 }: Props) {
   return (
     <div class="flex items-center gap-4 px-4 py-2 bg-[#141414] border-t border-b border-[#2a2a2a]">
@@ -59,18 +56,20 @@ export function PracticeHud({
           class={`text-xs px-2 py-0.5 rounded ${
             state === "PLAYING"
               ? "bg-[#22c55e] text-[#0a0a0a]"
-              : state === "SONG_COMPLETE"
-                ? "bg-[#f59e0b] text-[#0a0a0a]"
-                : "bg-[#2a2a2a] text-[#888]"
+              : state === "LISTENING" && !listenPaused
+                ? "bg-[#3b82f6] text-white"
+                : state === "SONG_COMPLETE"
+                  ? "bg-[#f59e0b] text-[#0a0a0a]"
+                  : "bg-[#2a2a2a] text-[#888]"
           }`}
         >
-          {stateLabel(state)}
+          {stateLabel(state, listenPaused)}
         </span>
       </div>
 
       <span class="text-sm text-[#888] flex-1 truncate">{statusMessage}</span>
 
-      {accuracy !== null && (
+      {accuracy !== null && state !== "LISTENING" && (
         <div class="flex items-center gap-1 text-sm">
           <span class="text-[#888]">Acc:</span>
           <span
@@ -87,7 +86,7 @@ export function PracticeHud({
         </div>
       )}
 
-      {streak > 0 && (
+      {streak > 0 && state !== "LISTENING" && (
         <div class="flex items-center gap-1 text-sm">
           <span class="text-[#888]">Streak:</span>
           <span class="text-[#f59e0b] font-bold">{streak}</span>
@@ -107,20 +106,61 @@ export function PracticeHud({
               class="px-3 py-1 bg-[#f59e0b] text-[#0a0a0a] rounded text-xs font-bold hover:bg-[#d97706]"
               onClick={onStart}
             >
-              Start
+              Practice
             </button>
           </>
         )}
+
+        {state === "LISTENING" && (
+          <>
+            {listenPaused ? (
+              <button
+                class="px-3 py-1 bg-[#3b82f6] text-white rounded text-xs font-bold hover:bg-[#2563eb]"
+                onClick={onResumeListen}
+              >
+                Resume
+              </button>
+            ) : (
+              <button
+                class="px-3 py-1 bg-[#2a2a2a] text-[#e0e0e0] rounded text-xs hover:bg-[#333]"
+                onClick={onPauseListen}
+              >
+                Pause
+              </button>
+            )}
+            <button
+              class="px-3 py-1 bg-[#2a2a2a] text-[#888] rounded text-xs hover:bg-[#333] hover:text-[#e0e0e0]"
+              onClick={onStopListen}
+            >
+              Stop
+            </button>
+          </>
+        )}
+
         {state === "SEGMENT_PREVIEW" && (
-          <button
-            class="px-3 py-1 bg-[#22c55e] text-[#0a0a0a] rounded text-xs font-bold hover:bg-[#16a34a]"
-            onClick={onPlay}
-          >
-            Play
-          </button>
+          <>
+            <button
+              class="px-3 py-1 bg-[#2a2a2a] text-[#e0e0e0] rounded text-xs hover:bg-[#333]"
+              onClick={onListenSegment}
+            >
+              Listen
+            </button>
+            <button
+              class="px-3 py-1 bg-[#22c55e] text-[#0a0a0a] rounded text-xs font-bold hover:bg-[#16a34a]"
+              onClick={onPlay}
+            >
+              Play
+            </button>
+          </>
         )}
         {(state === "EVALUATE" || state === "NEXT_SEGMENT") && (
           <>
+            <button
+              class="px-3 py-1 bg-[#2a2a2a] text-[#e0e0e0] rounded text-xs hover:bg-[#333]"
+              onClick={onListenSegment}
+            >
+              Listen
+            </button>
             <button
               class="px-3 py-1 bg-[#22c55e] text-[#0a0a0a] rounded text-xs font-bold hover:bg-[#16a34a]"
               onClick={onPlay}
@@ -143,14 +183,6 @@ export function PracticeHud({
             onClick={onPlay}
           >
             Start Exam
-          </button>
-        )}
-        {state !== "IDLE" && state !== "SONG_LOADED" && (
-          <button
-            class="px-3 py-1 bg-[#2a2a2a] text-[#888] rounded text-xs hover:bg-[#333] hover:text-[#e0e0e0]"
-            onClick={onStop}
-          >
-            Reset
           </button>
         )}
       </div>
