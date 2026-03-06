@@ -3,9 +3,10 @@
  * Draws 5-line staff, noteheads, bar lines, and animated playhead.
  */
 
-import type { MidiNote, HitResult } from "../engine/types";
+import type { MidiNote, HitResult, ExtraHit } from "../engine/types";
 import {
   layoutNotes,
+  noteToY,
   LINE_SPACING,
   STAFF_TOP,
   LEFT_MARGIN,
@@ -16,6 +17,7 @@ import {
 import { getDrumInfo } from "../utils/gm-drum-map";
 import {
   HIT_COLORS,
+  EXTRA_HIT_COLOR,
   NOTE_COLOR_DEFAULT,
   PLAYHEAD_COLOR,
   STAFF_COLOR,
@@ -193,6 +195,7 @@ export interface RenderOptions {
   timeSig: [number, number];
   playheadTime?: number;
   hitResults?: Map<number, HitResult>; // keyed by note index in array
+  extraHits?: ExtraHit[]; // extra hits not matched to expected notes
 }
 
 /** Main render function — draws complete notation to canvas */
@@ -243,6 +246,35 @@ export function renderNotation(
     }
 
     drawNote(ctx, pos, color);
+  }
+
+  // Extra hits — small "+" marks for hits not in the sheet
+  if (options.extraHits && options.extraHits.length > 0) {
+    const duration = options.endTime - options.startTime;
+    if (duration > 0) {
+      const usableWidth = w - LEFT_MARGIN - RIGHT_MARGIN;
+      ctx.strokeStyle = EXTRA_HIT_COLOR;
+      ctx.lineWidth = 1.5;
+      ctx.globalAlpha = 0.7;
+
+      for (const extra of options.extraHits) {
+        const fraction = (extra.songTime - options.startTime) / duration;
+        if (fraction < -0.01 || fraction > 1.01) continue;
+        const x = LEFT_MARGIN + fraction * usableWidth;
+        const y = noteToY(extra.note);
+        const s = NOTE_RADIUS * 0.5;
+
+        // Draw small "+" mark
+        ctx.beginPath();
+        ctx.moveTo(x - s, y);
+        ctx.lineTo(x + s, y);
+        ctx.moveTo(x, y - s);
+        ctx.lineTo(x, y + s);
+        ctx.stroke();
+      }
+
+      ctx.globalAlpha = 1;
+    }
   }
 
   // Playhead

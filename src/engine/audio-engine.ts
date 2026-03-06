@@ -1,6 +1,6 @@
 /**
  * Web Audio engine: loads samples, triggers playback with choke groups,
- * 16-voice polyphony with voice stealing, and metronome.
+ * polyphony with voice stealing, and metronome.
  */
 
 import type { Voice } from "./types";
@@ -13,12 +13,12 @@ const CHOKE_GROUPS: number[][] = [
   [44, 46, 23, 21], // Pedal HH chokes same
 ];
 
-const MAX_VOICES = 16;
+const MAX_VOICES = 32;
 
 /** Notes that should remap to another note's sample when no sample exists */
 const NOTE_REMAP: Record<number, number> = {
   35: 36, // Acoustic Bass Drum → Bass Drum 1
-  40: 38, // Electric Snare → Acoustic Snare (fallback)
+  40: 37, // Electric Snare (rimshot on Alesis Nitro) → Side Stick
 };
 
 /** Resolve a note to one that has a loaded sample */
@@ -27,7 +27,7 @@ function resolveNote(note: number, kit: Map<number, any>): number {
   return NOTE_REMAP[note] ?? note;
 }
 
-/** All sample filenames in the FreePats-GM kit */
+/** All sample filenames */
 const SAMPLE_FILES = [
   "21_v1_rr1.wav",
   "21_v1_rr2.wav",
@@ -37,7 +37,19 @@ const SAMPLE_FILES = [
   "23_v1_rr2.wav",
   "23_v1_rr3.wav",
   "23_v1_rr4.wav",
-  "36.wav",
+  "36_v1.wav",
+  "36_v2.wav",
+  "36_v3.wav",
+  "36_v4.wav",
+  "36_v5.wav",
+  "37_v1.wav",
+  "37_v2.wav",
+  "37_v3.wav",
+  "37_v4.wav",
+  "37_v5.wav",
+  "37_v6.wav",
+  "37_v7.wav",
+  "37_v8.wav",
   "38_v1_rr1.wav",
   "38_v1_rr2.wav",
   "38_v2_rr1.wav",
@@ -56,7 +68,6 @@ const SAMPLE_FILES = [
   "39_v1_rr7.wav",
   "39_v1_rr8.wav",
   "39_v1_rr9.wav",
-  "40.wav",
   "41_v1_rr1.wav",
   "41_v1_rr2.wav",
   "42_v1_rr1.wav",
@@ -108,11 +119,16 @@ export class AudioEngine {
   loaded = false;
 
   constructor() {
+    // Use the system's native sample rate and request balanced latency.
+    // "interactive" can cause underruns on Linux when many nodes are created rapidly.
     this.ctx = new AudioContext({
-      latencyHint: "interactive",
-      sampleRate: 44100,
+      latencyHint: "playback",
     });
+
+    // No compressor/limiter — they cause pumping artifacts on drum transients.
+    // Instead, keep per-voice volume low enough that overlapping hits stay under 1.0.
     this.masterGain = this.ctx.createGain();
+    this.masterGain.gain.value = 0.35;
     this.masterGain.connect(this.ctx.destination);
   }
 
@@ -135,10 +151,10 @@ export class AudioEngine {
 
     const resolved = resolveNote(note, this.kit);
 
-    // Apply choke groups — stop any voice in same choke group
+    // Apply choke groups — choke OTHER notes in the group, not the same note
     for (const group of CHOKE_GROUPS) {
       if (group.includes(resolved)) {
-        this.chokeNotes(group);
+        this.chokeNotes(group, resolved);
         break;
       }
     }
@@ -152,45 +168,60 @@ export class AudioEngine {
     // Voice stealing if at max
     if (this.voices.length >= MAX_VOICES) {
       const oldest = this.voices.shift()!;
-      oldest.gainNode.gain.setValueAtTime(0, this.ctx.currentTime);
-      oldest.source.stop();
+      this.fadeOutVoice(oldest);
     }
+
+    // Schedule slightly in the future so the audio thread can process it
+    // cleanly within a render quantum. source.start() without a time can
+    // cause glitches when the main thread is busy (React re-renders etc).
+    const startTime = this.ctx.currentTime + 0.005;
 
     const source = this.ctx.createBufferSource();
     source.buffer = buffer;
 
     const gainNode = this.ctx.createGain();
-    // Softer velocity curve: v^1.5 instead of v^2 for more audible low velocities
+    // Velocity curve — keep headroom so overlapping hits don't clip
     const vol = (velocity / 127) ** 1.5;
-    gainNode.gain.setValueAtTime(vol, this.ctx.currentTime);
+    gainNode.gain.value = vol;
 
     source.connect(gainNode);
     gainNode.connect(this.masterGain);
-    source.start();
+    source.start(startTime);
 
     const voice: Voice = {
       source,
       gainNode,
-      note,
-      startTime: this.ctx.currentTime,
+      note: resolved,
+      startTime,
     };
     this.voices.push(voice);
 
     source.onended = () => {
       const idx = this.voices.indexOf(voice);
       if (idx >= 0) this.voices.splice(idx, 1);
+      source.disconnect();
+      gainNode.disconnect();
     };
   }
 
-  /** Stop all voices playing notes in the given set */
-  private chokeNotes(notes: number[]): void {
+  /** Fade out a voice cleanly */
+  private fadeOutVoice(v: Voice): void {
     const t = this.ctx.currentTime;
+    v.gainNode.gain.cancelScheduledValues(t);
+    v.gainNode.gain.setValueAtTime(v.gainNode.gain.value, t);
+    v.gainNode.gain.setTargetAtTime(0, t, 0.005);
+    v.source.stop(t + 0.03);
+    v.source.onended = () => {
+      v.source.disconnect();
+      v.gainNode.disconnect();
+    };
+  }
+
+  /** Stop voices playing other notes in the choke group (not the triggering note itself) */
+  private chokeNotes(notes: number[], exclude: number): void {
     this.voices = this.voices.filter((v) => {
-      if (notes.includes(v.note)) {
-        // Quick fade out to avoid click
-        v.gainNode.gain.setValueAtTime(v.gainNode.gain.value, t);
-        v.gainNode.gain.linearRampToValueAtTime(0, t + 0.01);
-        v.source.stop(t + 0.015);
+      if (v.note !== exclude && notes.includes(v.note)) {
+        this.fadeOutVoice(v);
         return false;
       }
       return true;
@@ -259,7 +290,7 @@ export class AudioEngine {
 
     const gainNode = this.ctx.createGain();
     const vol = (velocity / 127) ** 1.5;
-    gainNode.gain.setValueAtTime(vol, time);
+    gainNode.gain.value = vol;
 
     source.connect(gainNode);
     gainNode.connect(this.masterGain);

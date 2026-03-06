@@ -1,10 +1,11 @@
-import { useState, useRef, useCallback } from "preact/hooks";
+import { useState, useRef, useCallback, useEffect } from "preact/hooks";
 import type {
   DrumTrack,
   Segment,
   SegmentResult,
   HitResult,
   HitQuality,
+  ExtraHit,
 } from "../engine/types";
 import type { RecordedHit } from "../learning/evaluator";
 import { evaluateSegment } from "../learning/evaluator";
@@ -21,14 +22,23 @@ import {
   jumpToSegment,
   startListening,
   processExamResult,
+  startAutoLearn as smStartAutoLearn,
 } from "../learning/state-machine";
 import { BpmController } from "../learning/bpm-controller";
 import { AudioEngine } from "../engine/audio-engine";
 import { bpmToSecondsPerBeat } from "../utils/timing";
+import {
+  getCombinedSegment,
+  saveCurriculumProgress,
+  loadCurriculumProgress,
+} from "../learning/curriculum";
 
 /** Timing windows (fraction of a beat) — same as evaluator */
 const CORRECT_WINDOW = 0.15;
 const LATE_EARLY_WINDOW = 0.25;
+
+/** Chain fail threshold before re-learning constituent segments */
+const CHAIN_RELEARN_THRESHOLD = 10;
 
 export function useLearningSession(engine: AudioEngine | null) {
   const [session, setSession] = useState<LearningSession>(createSession);
@@ -40,6 +50,8 @@ export function useLearningSession(engine: AudioEngine | null) {
   const segmentTimerRef = useRef<number>(0);
   const countInTimerRef = useRef<number>(0);
   const hitResultsRef = useRef<Map<number, HitResult>>(new Map());
+  const extraHitsRef = useRef<ExtraHit[]>([]);
+  const autoAdvanceTimerRef = useRef<number>(0);
 
   // Counter to force re-renders when hitResultsRef changes during PLAYING
   const [hitResultVersion, setHitResultVersion] = useState(0);
@@ -80,7 +92,7 @@ export function useLearningSession(engine: AudioEngine | null) {
           engine.scheduleClick(now + audioOffset, i % timeSig[0] === 0);
         }
       } else if (s.state === "PLAYING" && s.bpmController && s.track) {
-        const seg = s.segments[s.currentSegmentIndex];
+        const seg = s.activeSegment ?? s.segments[s.currentSegmentIndex];
         if (!seg) return;
         const bpm = s.bpmController.currentBpm;
         const beatDur = bpmToSecondsPerBeat(bpm);
@@ -100,16 +112,17 @@ export function useLearningSession(engine: AudioEngine | null) {
   // Listen mode state
   const listenTimerRef = useRef<number>(0);
   const listenSourcesRef = useRef<AudioBufferSourceNode[]>([]);
-  const listenStartAudioTimeRef = useRef<number>(0); // audio context time when scheduling started
-  const listenFromTimeRef = useRef<number>(0); // song time position we started from
-  const listenPositionRef = useRef<number>(0); // saved song time position (for pause)
-  const listenBpmRatioRef = useRef<number>(1); // track.bpm / listenBpm
+  const listenStartAudioTimeRef = useRef<number>(0);
+  const listenFromTimeRef = useRef<number>(0);
+  const listenPositionRef = useRef<number>(0);
+  const listenBpmRatioRef = useRef<number>(1);
   const [listenPaused, setListenPaused] = useState(false);
   const listenPausedRef = useRef(false);
   listenPausedRef.current = listenPaused;
 
+  // Use activeSegment when available, otherwise fall back to segments[currentSegmentIndex]
   const currentSegment: Segment | null =
-    session.segments[session.currentSegmentIndex] ?? null;
+    session.activeSegment ?? session.segments[session.currentSegmentIndex] ?? null;
 
   const currentBpm = session.bpmController?.currentBpm ?? 0;
   const targetBpm = session.bpmController?.targetBpm ?? 0;
@@ -149,7 +162,6 @@ export function useLearningSession(engine: AudioEngine | null) {
 
     const listenBpm = s.bpmController?.targetBpm || track.bpm;
     const bpmRatio = track.bpm / listenBpm;
-    // Guard against invalid ratio
     if (!isFinite(bpmRatio) || bpmRatio <= 0) return;
 
     const now = engine.ctx.currentTime;
@@ -160,7 +172,6 @@ export function useLearningSession(engine: AudioEngine | null) {
 
     const sources: AudioBufferSourceNode[] = [];
 
-    // Schedule remaining notes scaled by BPM ratio
     for (const note of track.notes) {
       if (note.time < fromTime - 0.01) continue;
       const audioOffset = (note.time - fromTime) * bpmRatio;
@@ -172,14 +183,9 @@ export function useLearningSession(engine: AudioEngine | null) {
       if (src) sources.push(src);
     }
 
-    // Schedule metronome clicks at target BPM
     if (metronomeOnRef.current) {
       const beatDur = bpmToSecondsPerBeat(listenBpm);
       const timeSig = track.timeSignature;
-      // Total real-time duration of remaining song
-      const remainingRealTime = (track.durationSeconds - fromTime) * bpmRatio;
-      const numBeats = Math.ceil(remainingRealTime / beatDur);
-      // First beat: find the beat boundary in song time, then scale
       const origBeatDur = bpmToSecondsPerBeat(track.bpm);
       const firstBeatIdx = Math.ceil(fromTime / origBeatDur);
       for (let i = firstBeatIdx; ; i++) {
@@ -193,7 +199,6 @@ export function useLearningSession(engine: AudioEngine | null) {
 
     listenSourcesRef.current = sources;
 
-    // Timer to return to SONG_LOADED when done
     clearTimeout(listenTimerRef.current);
     const remainingRealTime = (track.durationSeconds - fromTime) * bpmRatio + 0.5;
     listenTimerRef.current = window.setTimeout(() => {
@@ -220,7 +225,6 @@ export function useLearningSession(engine: AudioEngine | null) {
   /** Begin listening mode, optionally from a specific time */
   const listen = useCallback((fromTime?: number) => {
     if (!engine) return;
-    // Cancel everything: previous listen, practice timers, segment listen
     cancelListenSources();
     clearTimeout(segmentTimerRef.current);
     clearTimeout(countInTimerRef.current);
@@ -239,7 +243,6 @@ export function useLearningSession(engine: AudioEngine | null) {
   /** Pause listening */
   const pauseListen = useCallback(() => {
     if (!engine) return;
-    // Save current position in song time
     const elapsed = engine.ctx.currentTime - listenStartAudioTimeRef.current;
     listenPositionRef.current = listenFromTimeRef.current + elapsed / listenBpmRatioRef.current;
     cancelListenSources();
@@ -278,6 +281,7 @@ export function useLearningSession(engine: AudioEngine | null) {
       return {
         ...s,
         currentSegmentIndex: idx,
+        activeSegment: s.segments[idx] ?? null,
         state: "SEGMENT_PREVIEW",
         bpmController: new BpmController(target),
         statusMessage: `Segment ${idx + 1}: Preview`,
@@ -285,7 +289,7 @@ export function useLearningSession(engine: AudioEngine | null) {
     });
   }, [cancelListenSources]);
 
-  /** Get current listen position in song time (for playhead, called from app.tsx) */
+  /** Get current listen position in song time */
   const getListenPosition = useCallback((): number => {
     if (!engine) return listenPositionRef.current;
     if (listenPaused) return listenPositionRef.current;
@@ -321,15 +325,14 @@ export function useLearningSession(engine: AudioEngine | null) {
   const listenSegment = useCallback(() => {
     if (!engine) return;
     const s = sessionRef.current;
-    const seg = s.segments[s.currentSegmentIndex];
+    const seg = s.activeSegment ?? s.segments[s.currentSegmentIndex];
     const track = s.track;
     if (!seg || !track || !s.bpmController) return;
 
-    // Clear hit results so notes appear white during preview
     hitResultsRef.current = new Map();
+    extraHitsRef.current = [];
     setHitResultVersion(0);
 
-    // Cancel any previous segment listen
     for (const src of segmentListenSourcesRef.current) {
       try { src.stop(); } catch {}
     }
@@ -344,14 +347,12 @@ export function useLearningSession(engine: AudioEngine | null) {
     segmentListenBpmRatioRef.current = bpmRatio;
     setSegmentListening(true);
 
-    // Schedule segment notes at current practice BPM
     for (const note of seg.notes) {
       const t = (note.time - seg.startTime) * bpmRatio;
       const src = engine.scheduleTrigger(note.note, note.velocity, now + t);
       if (src) sources.push(src);
     }
 
-    // Schedule metronome if enabled
     if (metronomeOnRef.current) {
       const beatDur = bpmToSecondsPerBeat(bpm);
       const segDuration = (seg.endTime - seg.startTime) * bpmRatio;
@@ -364,7 +365,6 @@ export function useLearningSession(engine: AudioEngine | null) {
 
     segmentListenSourcesRef.current = sources;
 
-    // Clean up when done
     const segDuration = (seg.endTime - seg.startTime) * bpmRatio;
     clearTimeout(segmentListenTimerRef.current);
     segmentListenTimerRef.current = window.setTimeout(() => {
@@ -376,7 +376,8 @@ export function useLearningSession(engine: AudioEngine | null) {
   /** Get current segment-listen playhead position in song time */
   const getSegmentListenPosition = useCallback((): number | undefined => {
     if (!engine || !segmentListening) return undefined;
-    const seg = sessionRef.current.segments[sessionRef.current.currentSegmentIndex];
+    const s = sessionRef.current;
+    const seg = s.activeSegment ?? s.segments[s.currentSegmentIndex];
     if (!seg) return undefined;
     const elapsed = engine.ctx.currentTime - segmentListenStartRef.current;
     return seg.startTime + elapsed / segmentListenBpmRatioRef.current;
@@ -386,8 +387,8 @@ export function useLearningSession(engine: AudioEngine | null) {
   const beginPlaying = useCallback(() => {
     if (!engine) return;
 
-    // Clear hit results immediately so notes appear white during count-in
     hitResultsRef.current = new Map();
+    extraHitsRef.current = [];
     setHitResultVersion(0);
 
     setSession((s) => {
@@ -407,11 +408,12 @@ export function useLearningSession(engine: AudioEngine | null) {
       countInTimerRef.current = window.setTimeout(() => {
         recordedHitsRef.current = [];
         hitResultsRef.current = new Map();
+        extraHitsRef.current = [];
         setHitResultVersion(0);
         playStartTimeRef.current = engine.ctx.currentTime;
         setSession((s2) => startPlaying(s2));
 
-        const seg = s.segments[s.currentSegmentIndex];
+        const seg = s.activeSegment ?? s.segments[s.currentSegmentIndex];
         if (seg && s.bpmController) {
           const bpmRatio = s.track!.bpm / s.bpmController.currentBpm;
           const segDuration = (seg.endTime - seg.startTime) * bpmRatio;
@@ -448,13 +450,13 @@ export function useLearningSession(engine: AudioEngine | null) {
       const elapsed = engine.ctx.currentTime - playStartTimeRef.current;
       recordedHitsRef.current.push({ note, velocity, time: elapsed });
 
-      // Real-time matching: find the nearest unmatched expected note
-      const seg = s.segments[s.currentSegmentIndex];
+      const seg = s.activeSegment ?? s.segments[s.currentSegmentIndex];
       if (!seg || !s.bpmController || !s.track) return;
 
       const bpm = s.bpmController.currentBpm;
       const beatDuration = 60 / bpm;
       const bpmRatio = s.track.bpm / bpm;
+      const maxMatchDistance = LATE_EARLY_WINDOW * beatDuration;
 
       let bestIdx = -1;
       let bestOffset = Infinity;
@@ -466,6 +468,8 @@ export function useLearningSession(engine: AudioEngine | null) {
 
         const scaledTime = (expected.time - seg.startTime) * bpmRatio;
         const offset = elapsed - scaledTime;
+        // Only match within the timing window — prevents stealing future notes
+        if (Math.abs(offset) > maxMatchDistance) continue;
         if (Math.abs(offset) < Math.abs(bestOffset)) {
           bestOffset = offset;
           bestIdx = i;
@@ -492,7 +496,14 @@ export function useLearningSession(engine: AudioEngine | null) {
           playedNote: note,
         });
 
-        // Force re-render so SegmentView picks up the new color
+        setHitResultVersion((v) => v + 1);
+      } else {
+        // Extra hit — not matched to any expected note
+        extraHitsRef.current.push({
+          note,
+          velocity,
+          songTime: seg.startTime + elapsed / bpmRatio,
+        });
         setHitResultVersion((v) => v + 1);
       }
     },
@@ -502,7 +513,7 @@ export function useLearningSession(engine: AudioEngine | null) {
   /** Evaluate the current attempt */
   const evaluate = useCallback(() => {
     setSession((s) => {
-      const seg = s.segments[s.currentSegmentIndex];
+      const seg = s.activeSegment ?? s.segments[s.currentSegmentIndex];
       if (!seg || !s.bpmController || !s.track) return s;
 
       const result = evaluateSegment(
@@ -540,13 +551,11 @@ export function useLearningSession(engine: AudioEngine | null) {
   const setTargetBpm = useCallback((bpm: number) => {
     const clamped = Math.max(20, Math.min(300, Math.round(bpm)));
 
-    // Persist per song
     const trackName = sessionRef.current.track?.name;
     if (trackName) {
       localStorage.setItem(`drumtutor:bpm:${trackName}`, String(clamped));
     }
 
-    // Capture current listen position before changing anything
     const wasListening = sessionRef.current.state === "LISTENING";
     let listenSongPos = 0;
     let wasPaused = false;
@@ -567,13 +576,10 @@ export function useLearningSession(engine: AudioEngine | null) {
       return { ...s, bpmController: newController };
     });
 
-    // Reschedule listen mode at new BPM
     if (wasListening && engine) {
       cancelListenSources();
       listenPositionRef.current = listenSongPos;
       if (!wasPaused) {
-        // Will pick up the new targetBpm from session on next call
-        // Use setTimeout to let session state settle first
         setTimeout(() => {
           scheduleListenFrom(listenSongPos);
         }, 0);
@@ -581,11 +587,439 @@ export function useLearningSession(engine: AudioEngine | null) {
     }
   }, [engine, listenPaused, cancelListenSources, scheduleListenFrom]);
 
+  // ============================================================
+  // AUTO-LEARN
+  // ============================================================
+
+  const [autoLearnPaused, setAutoLearnPaused] = useState(false);
+  const autoLearnPausedRef = useRef(false);
+  autoLearnPausedRef.current = autoLearnPaused;
+  // When paused, remember what we were about to do so we can resume
+  const autoLearnPendingActionRef = useRef<(() => void) | null>(null);
+
+  /** Start auto-learn mode, optionally from a saved step */
+  const startAutoLearnMode = useCallback((startFromStep?: number | unknown) => {
+    // Guard against click events being passed as argument
+    const step = typeof startFromStep === "number" ? startFromStep : undefined;
+    clearTimeout(autoAdvanceTimerRef.current);
+    setAutoLearnPaused(false);
+    autoLearnPendingActionRef.current = null;
+    setSession((s) => {
+      if (s.segments.length === 0 || !s.track) return s;
+
+      // Load saved progress to determine where to resume
+      let resumeStep = step;
+      if (resumeStep === undefined) {
+        const passedIndices = loadCurriculumProgress(s.track.name);
+        if (passedIndices.length > 0) {
+          resumeStep = Math.max(...passedIndices) + 1;
+        }
+      }
+
+      return smStartAutoLearn(s, resumeStep);
+    });
+  }, [engine]);
+
+  /** Pause auto-learn — cancel pending timers, freeze in place */
+  const pauseAutoLearn = useCallback(() => {
+    clearTimeout(autoAdvanceTimerRef.current);
+    // If we're in a segment listen, stop it
+    clearTimeout(segmentListenTimerRef.current);
+    for (const src of segmentListenSourcesRef.current) {
+      try { src.stop(); } catch {}
+    }
+    segmentListenSourcesRef.current = [];
+    setSegmentListening(false);
+    engine?.cancelScheduled();
+    // If counting in or playing, cancel those too
+    clearTimeout(countInTimerRef.current);
+    clearTimeout(segmentTimerRef.current);
+
+    setAutoLearnPaused(true);
+    setSession((s) => {
+      if (!s.autoLearn) return s;
+      // Go back to SEGMENT_PREVIEW so we can resume cleanly
+      const step = s.autoLearn.curriculum[s.autoLearn.currentStepIndex];
+      return {
+        ...s,
+        state: "SEGMENT_PREVIEW",
+        statusMessage: `Paused — ${step?.label ?? ""}`,
+      };
+    });
+  }, [engine]);
+
+  /** Resume auto-learn — restart from current step's preview */
+  const resumeAutoLearn = useCallback(() => {
+    setAutoLearnPaused(false);
+    autoLearnPendingActionRef.current = null;
+    // Trigger re-entry into SEGMENT_PREVIEW auto-listen by bumping state
+    setSession((s) => {
+      if (!s.autoLearn) return s;
+      const step = s.autoLearn.curriculum[s.autoLearn.currentStepIndex];
+      return {
+        ...s,
+        state: "SEGMENT_PREVIEW",
+        statusMessage: `Listening to ${step?.label ?? ""}...`,
+      };
+    });
+  }, []);
+
+  /** Jump to a specific curriculum step, marking all prior steps as passed */
+  const jumpToAutoStep = useCallback((stepIndex: number) => {
+    clearTimeout(autoAdvanceTimerRef.current);
+    clearTimeout(segmentTimerRef.current);
+    clearTimeout(countInTimerRef.current);
+    clearTimeout(segmentListenTimerRef.current);
+    for (const src of segmentListenSourcesRef.current) {
+      try { src.stop(); } catch {}
+    }
+    segmentListenSourcesRef.current = [];
+    setSegmentListening(false);
+    setAutoLearnPaused(false);
+    autoLearnPendingActionRef.current = null;
+    engine?.cancelScheduled();
+
+    setSession((s) => {
+      if (!s.autoLearn || !s.track) return s;
+      const al = s.autoLearn;
+      const curriculum = [...al.curriculum];
+
+      if (stepIndex < 0 || stepIndex >= curriculum.length) return s;
+
+      // Mark all steps before target as passed, target as active, rest as pending
+      for (let i = 0; i < curriculum.length; i++) {
+        curriculum[i] = {
+          ...curriculum[i],
+          status: i < stepIndex ? "passed" : i === stepIndex ? "active" : "pending",
+        };
+      }
+
+      // Save progress
+      const passedIndices = curriculum
+        .map((step, i) => (step.status === "passed" ? i : -1))
+        .filter((i) => i >= 0);
+      saveCurriculumProgress(s.track.name, passedIndices);
+
+      const step = curriculum[stepIndex];
+      const combined = getCombinedSegment(s.segments, step.segmentRange);
+      const target = s.bpmController?.targetBpm ?? s.track.bpm;
+
+      return {
+        ...s,
+        state: "SEGMENT_PREVIEW",
+        activeSegment: combined,
+        metronomeEnabled: step.withClick,
+        bpmController: new BpmController(target),
+        autoLearn: {
+          curriculum,
+          currentStepIndex: stepIndex,
+          stepFailCount: 0,
+          relearning: false,
+          relearnSubIndex: 0,
+          relearnPassed: new Set(),
+        },
+        statusMessage: step.label,
+      };
+    });
+  }, [engine]);
+
+  /** Stop auto-learn mode — return to manual at current segment */
+  const stopAutoLearn = useCallback(() => {
+    clearTimeout(autoAdvanceTimerRef.current);
+    clearTimeout(segmentTimerRef.current);
+    clearTimeout(countInTimerRef.current);
+    clearTimeout(segmentListenTimerRef.current);
+    for (const src of segmentListenSourcesRef.current) {
+      try { src.stop(); } catch {}
+    }
+    segmentListenSourcesRef.current = [];
+    setSegmentListening(false);
+    setAutoLearnPaused(false);
+    autoLearnPendingActionRef.current = null;
+    engine?.cancelScheduled();
+
+    setSession((s) => {
+      if (!s.track) return s;
+      return {
+        ...s,
+        autoLearn: null,
+        state: "SONG_LOADED",
+        statusMessage: `Loaded: ${s.segments.length} segments at ${s.track.bpm} BPM`,
+      };
+    });
+  }, [engine]);
+
+  /** Advance to the next curriculum step */
+  const advanceAutoStep = useCallback(() => {
+    setSession((s) => {
+      if (!s.autoLearn || !s.track) return s;
+      const al = s.autoLearn;
+      const curriculum = [...al.curriculum];
+
+      // Mark current step as passed
+      curriculum[al.currentStepIndex] = {
+        ...curriculum[al.currentStepIndex],
+        status: "passed",
+      };
+
+      // Save progress
+      const passedIndices = curriculum
+        .map((step, i) => (step.status === "passed" ? i : -1))
+        .filter((i) => i >= 0);
+      saveCurriculumProgress(s.track.name, passedIndices);
+
+      const nextIdx = al.currentStepIndex + 1;
+
+      // Curriculum complete
+      if (nextIdx >= curriculum.length) {
+        return {
+          ...s,
+          autoLearn: { ...al, curriculum, currentStepIndex: al.currentStepIndex },
+          state: "SONG_COMPLETE",
+          statusMessage: "Congratulations! Song complete!",
+        };
+      }
+
+      // Activate next step
+      curriculum[nextIdx] = { ...curriculum[nextIdx], status: "active" };
+      const step = curriculum[nextIdx];
+      const combined = getCombinedSegment(s.segments, step.segmentRange);
+      const target = s.bpmController?.targetBpm ?? s.track.bpm;
+
+      return {
+        ...s,
+        state: "SEGMENT_PREVIEW",
+        activeSegment: combined,
+        metronomeEnabled: step.withClick,
+        bpmController: new BpmController(target),
+        autoLearn: {
+          curriculum,
+          currentStepIndex: nextIdx,
+          stepFailCount: 0,
+          relearning: false,
+          relearnSubIndex: 0,
+          relearnPassed: new Set(),
+        },
+        statusMessage: step.label,
+      };
+    });
+  }, []);
+
+  /** Handle re-learning: advance through constituent segments of a failed chain */
+  const handleRelearnAdvance = useCallback(() => {
+    setSession((s) => {
+      if (!s.autoLearn || !s.track) return s;
+      const al = s.autoLearn;
+      const step = al.curriculum[al.currentStepIndex];
+      const [rangeStart, rangeEnd] = step.segmentRange;
+
+      // Mark current relearn sub-segment as passed
+      const newPassed = new Set(al.relearnPassed);
+      newPassed.add(al.relearnSubIndex);
+
+      const nextSubIdx = al.relearnSubIndex + 1;
+      const totalSubs = rangeEnd - rangeStart + 1;
+
+      if (nextSubIdx >= totalSubs || newPassed.size >= totalSubs) {
+        // All constituents re-learned — return to the chain
+        const combined = getCombinedSegment(s.segments, step.segmentRange);
+        const target = s.bpmController?.targetBpm ?? s.track.bpm;
+        return {
+          ...s,
+          state: "SEGMENT_PREVIEW",
+          activeSegment: combined,
+          bpmController: new BpmController(target),
+          autoLearn: {
+            ...al,
+            stepFailCount: 0,
+            relearning: false,
+            relearnSubIndex: 0,
+            relearnPassed: new Set(),
+          },
+          statusMessage: `${step.label} (retry)`,
+        };
+      }
+
+      // Move to next constituent segment
+      const segIdx = rangeStart + nextSubIdx;
+      const seg = s.segments[segIdx];
+      const target = s.bpmController?.targetBpm ?? s.track.bpm;
+      // Start at 50% BPM for re-learning
+      const relearnBpm = Math.round(target * 0.5);
+
+      return {
+        ...s,
+        state: "SEGMENT_PREVIEW",
+        activeSegment: seg,
+        currentSegmentIndex: segIdx,
+        bpmController: new BpmController(target),
+        autoLearn: {
+          ...al,
+          relearnSubIndex: nextSubIdx,
+          relearnPassed: newPassed,
+        },
+        statusMessage: `Re-learn S${segIdx + 1} (${newPassed.size + 1}/${totalSubs})`,
+      };
+    });
+  }, []);
+
+  // ============================================================
+  // AUTO-ADVANCE CONDUCTOR (useEffect)
+  // ============================================================
+
+  /** Schedule an auto-advance action, respecting pause */
+  const scheduleAutoAction = useCallback((action: () => void, delayMs: number, pendingMessage: string) => {
+    clearTimeout(autoAdvanceTimerRef.current);
+    if (autoLearnPausedRef.current) {
+      autoLearnPendingActionRef.current = action;
+      return;
+    }
+    // Show what's coming
+    setSession((s) => ({ ...s, statusMessage: pendingMessage }));
+    autoAdvanceTimerRef.current = window.setTimeout(() => {
+      if (autoLearnPausedRef.current) {
+        autoLearnPendingActionRef.current = action;
+        return;
+      }
+      action();
+    }, delayMs);
+  }, []);
+
+  // Auto-listen when entering SEGMENT_PREVIEW in auto mode
+  useEffect(() => {
+    const s = session;
+    if (!s.autoLearn || s.state !== "SEGMENT_PREVIEW" || autoLearnPaused) return;
+
+    const step = s.autoLearn.curriculum[s.autoLearn.currentStepIndex];
+    const label = step?.label ?? "";
+
+    const timer = window.setTimeout(() => {
+      if (autoLearnPausedRef.current) return;
+      setSession((s2) => ({ ...s2, statusMessage: `Listening to ${label}...` }));
+      listenSegment();
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [session.state, session.autoLearn?.currentStepIndex, session.autoLearn?.relearning, autoLearnPaused]);
+
+  // Auto count-in after segment listen finishes
+  useEffect(() => {
+    const s = sessionRef.current;
+    if (!s.autoLearn || autoLearnPausedRef.current) return;
+    if (s.state !== "SEGMENT_PREVIEW") return;
+
+    if (segmentListening) return;
+    if (!prevSegmentListeningRef.current) return;
+
+    // Show "Get ready to play..." immediately and keep it for the full delay
+    clearTimeout(autoAdvanceTimerRef.current);
+    setSession((s2) => ({ ...s2, statusMessage: "Get ready to play..." }));
+    autoAdvanceTimerRef.current = window.setTimeout(() => {
+      if (autoLearnPausedRef.current) return;
+      beginPlaying();
+    }, 1500);
+
+    return () => clearTimeout(autoAdvanceTimerRef.current);
+  }, [segmentListening]);
+
+  const prevSegmentListeningRef = useRef(false);
+  useEffect(() => {
+    prevSegmentListeningRef.current = segmentListening;
+  }, [segmentListening]);
+
+  // Auto-advance after evaluation in auto mode
+  useEffect(() => {
+    const s = session;
+    if (!s.autoLearn || s.state !== "EVALUATE" || !s.lastResult || autoLearnPaused) return;
+
+    const al = s.autoLearn;
+    const passed = s.lastResult.passed;
+    const atTarget = s.bpmController?.atTarget ?? false;
+    const step = al.curriculum[al.currentStepIndex];
+    const nextStep = al.curriculum[al.currentStepIndex + 1];
+
+    clearTimeout(autoAdvanceTimerRef.current);
+
+    if (passed && atTarget) {
+      if (al.relearning) {
+        scheduleAutoAction(
+          () => handleRelearnAdvance(),
+          2000,
+          "PASSED — next re-learn segment..."
+        );
+      } else {
+        const nextLabel = nextStep ? `Moving to ${nextStep.label}...` : "Finishing up...";
+        scheduleAutoAction(
+          () => advanceAutoStep(),
+          2000,
+          `PASSED — ${nextLabel}`
+        );
+      }
+    } else if (passed && !atTarget) {
+      const newBpm = s.bpmController?.currentBpm ?? 0;
+      scheduleAutoAction(
+        () => beginPlaying(),
+        1000,
+        `PASSED — BPM up to ${newBpm}, get ready...`
+      );
+    } else {
+      // Failed
+      if (!al.relearning && al.stepFailCount >= CHAIN_RELEARN_THRESHOLD && step.chainSize > 1) {
+        const [rangeStart] = step.segmentRange;
+        scheduleAutoAction(
+          () => {
+            setSession((s2) => {
+              if (!s2.autoLearn || !s2.track) return s2;
+              const st = s2.autoLearn.curriculum[s2.autoLearn.currentStepIndex];
+              const [rs] = st.segmentRange;
+              const seg = s2.segments[rs];
+              const target = s2.bpmController?.targetBpm ?? s2.track.bpm;
+
+              return {
+                ...s2,
+                state: "SEGMENT_PREVIEW",
+                activeSegment: seg,
+                currentSegmentIndex: rs,
+                bpmController: new BpmController(target),
+                autoLearn: {
+                  ...s2.autoLearn,
+                  relearning: true,
+                  relearnSubIndex: 0,
+                  relearnPassed: new Set(),
+                },
+                statusMessage: `Re-learn S${rs + 1}`,
+              };
+            });
+          },
+          1500,
+          `FAILED — too many attempts, re-learning S${rangeStart + 1}...`
+        );
+      } else {
+        scheduleAutoAction(
+          () => {
+            setSession((s2) => ({
+              ...s2,
+              state: "SEGMENT_PREVIEW",
+              statusMessage: s2.autoLearn
+                ? s2.autoLearn.curriculum[s2.autoLearn.currentStepIndex]?.label ?? ""
+                : "",
+            }));
+          },
+          1500,
+          "FAILED — retrying..."
+        );
+      }
+    }
+
+    return () => clearTimeout(autoAdvanceTimerRef.current);
+  }, [session.state, session.lastResult, session.autoLearn?.stepFailCount, autoLearnPaused]);
+
   /** Full reset */
   const stop = useCallback(() => {
     clearTimeout(segmentTimerRef.current);
     clearTimeout(countInTimerRef.current);
     clearTimeout(segmentListenTimerRef.current);
+    clearTimeout(autoAdvanceTimerRef.current);
     cancelListenSources();
     for (const src of segmentListenSourcesRef.current) {
       try { src.stop(); } catch {}
@@ -603,6 +1037,7 @@ export function useLearningSession(engine: AudioEngine | null) {
     currentBpm,
     targetBpm,
     hitResults: hitResultsRef.current,
+    extraHits: extraHitsRef.current,
     hitResultVersion,
     listenPaused,
     segmentListening,
@@ -627,5 +1062,11 @@ export function useLearningSession(engine: AudioEngine | null) {
     examResult,
     setTargetBpm,
     stop,
+    startAutoLearn: startAutoLearnMode,
+    stopAutoLearn,
+    autoLearnPaused,
+    pauseAutoLearn,
+    resumeAutoLearn,
+    jumpToAutoStep,
   };
 }

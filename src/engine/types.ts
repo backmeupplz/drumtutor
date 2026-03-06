@@ -63,6 +63,36 @@ export type LearningState =
   | "EXAM_WITHOUT_CLICK"
   | "SONG_COMPLETE";
 
+/** A step in the auto-learn curriculum */
+export type CurriculumPhase = "individual" | "chain" | "full";
+
+export interface CurriculumStep {
+  segmentRange: [number, number]; // inclusive segment indices
+  phase: CurriculumPhase;
+  chainSize: number; // 1 for individual, 2/4/8/16/... for chains
+  label: string;
+  withClick: boolean;
+  status: "pending" | "active" | "passed";
+}
+
+/** State for auto-learn mode */
+export interface AutoLearnState {
+  curriculum: CurriculumStep[];
+  currentStepIndex: number;
+  stepFailCount: number;
+  relearning: boolean;
+  relearnSubIndex: number;
+  relearnPassed: Set<number>;
+}
+
+/** An extra hit not matched to any expected note */
+export interface ExtraHit {
+  note: number;
+  velocity: number;
+  /** Time in original song coordinates (for positioning on staff) */
+  songTime: number;
+}
+
 /** Voice for polyphonic playback */
 export interface Voice {
   source: AudioBufferSourceNode;

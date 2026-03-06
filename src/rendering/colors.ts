@@ -9,6 +9,7 @@ export const HIT_COLORS: Record<HitQuality, string> = {
   miss: "#ef4444", // red
 };
 
+export const EXTRA_HIT_COLOR = "#a855f7"; // purple — extra hit not in sheet
 export const NOTE_COLOR_DEFAULT = "#e0e0e0";
 export const NOTE_COLOR_PLAYING = "#3b82f6";
 export const PLAYHEAD_COLOR = "#f59e0b";

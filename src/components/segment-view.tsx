@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState, useCallback } from "preact/hooks";
-import type { MidiNote, HitResult } from "../engine/types";
+import type { MidiNote, HitResult, ExtraHit } from "../engine/types";
 import { renderNotation } from "../rendering/drum-notation";
 import { layoutNotes, NOTE_RADIUS, LEFT_MARGIN, RIGHT_MARGIN } from "../rendering/notation-layout";
 import { getDrumInfo } from "../utils/gm-drum-map";
@@ -12,6 +12,7 @@ interface Props {
   timeSig: [number, number];
   playheadTime?: number;
   hitResults?: Map<number, HitResult>;
+  extraHits?: ExtraHit[];
   onTimeClick?: (time: number) => void;
 }
 
@@ -29,6 +30,7 @@ export function SegmentView({
   timeSig,
   playheadTime,
   hitResults,
+  extraHits,
   onTimeClick,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -48,6 +50,7 @@ export function SegmentView({
         timeSig,
         playheadTime,
         hitResults,
+        extraHits,
       });
     };
 
@@ -59,7 +62,7 @@ export function SegmentView({
     return () => {
       observer.disconnect();
     };
-  }, [notes, startTime, endTime, bpm, timeSig, playheadTime, hitResults]);
+  }, [notes, startTime, endTime, bpm, timeSig, playheadTime, hitResults, extraHits]);
 
   const handleMouseMove = useCallback(
     (e: MouseEvent) => {

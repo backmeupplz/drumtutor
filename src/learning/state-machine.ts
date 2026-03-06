@@ -7,9 +7,11 @@ import type {
   Segment,
   DrumTrack,
   SegmentResult,
+  AutoLearnState,
 } from "../engine/types";
 import { BpmController } from "./bpm-controller";
 import { segmentTrack } from "./segmenter";
+import { buildCurriculum, getCombinedSegment } from "./curriculum";
 
 export interface LearningSession {
   state: LearningState;
@@ -27,6 +29,10 @@ export interface LearningSession {
   lastResult: SegmentResult | null;
   /** Message to display in HUD */
   statusMessage: string;
+  /** The active segment (or combined chain) being practiced — used by auto-learn and manual */
+  activeSegment: Segment | null;
+  /** Auto-learn state, null = manual mode */
+  autoLearn: AutoLearnState | null;
 }
 
 export function createSession(): LearningSession {
@@ -42,6 +48,8 @@ export function createSession(): LearningSession {
     streak: 0,
     lastResult: null,
     statusMessage: "Load a MIDI file to begin",
+    activeSegment: null,
+    autoLearn: null,
   };
 }
 
@@ -60,6 +68,8 @@ export function loadSong(session: LearningSession, track: DrumTrack): LearningSe
     streak: 0,
     lastResult: null,
     statusMessage: `Loaded: ${segments.length} segments at ${track.bpm} BPM`,
+    activeSegment: null,
+    autoLearn: null,
   };
 }
 
@@ -79,6 +89,7 @@ export function startSegment(session: LearningSession): LearningSession {
   return {
     ...session,
     state: "SEGMENT_PREVIEW",
+    activeSegment: session.segments[session.currentSegmentIndex] ?? null,
     statusMessage: `Segment ${session.currentSegmentIndex + 1}: Preview`,
   };
 }
@@ -110,15 +121,39 @@ export function processResult(
 
   const updated = { ...session, lastResult: result, state: "EVALUATE" as LearningState };
 
+  if (session.autoLearn) {
+    // Auto-learn mode: always stay in EVALUATE, let the conductor handle transitions
+    // Still call bpmController pass/fail for BPM adjustments
+    if (result.passed) {
+      if (session.bpmController.atTarget) {
+        updated.passedSegments = new Set(session.passedSegments);
+        updated.passedSegments.add(session.currentSegmentIndex);
+        updated.streak = session.streak + 1;
+        updated.statusMessage = `PASSED`;
+      } else {
+        session.bpmController.onPass();
+        updated.statusMessage = `PASSED`;
+      }
+    } else {
+      session.bpmController.onFail();
+      updated.streak = 0;
+      updated.statusMessage = `FAILED`;
+      // Increment step fail count
+      const al = { ...session.autoLearn };
+      al.stepFailCount = (al.stepFailCount || 0) + 1;
+      updated.autoLearn = al;
+    }
+    return updated;
+  }
+
+  // Manual mode: original behavior
   if (result.passed) {
     if (session.bpmController.atTarget) {
-      // Passed at target BPM — segment complete
       updated.passedSegments = new Set(session.passedSegments);
       updated.passedSegments.add(session.currentSegmentIndex);
       updated.streak = session.streak + 1;
       updated.statusMessage = `Pass! Accuracy: ${Math.round(result.accuracy * 100)}%`;
 
-      // Check if all segments passed
       if (updated.passedSegments.size === session.segments.length) {
         updated.state = "EXAM_WITH_CLICK";
         updated.statusMessage = "All segments passed! Exam with metronome...";
@@ -127,13 +162,11 @@ export function processResult(
         updated.statusMessage = `Segment complete! Moving to next...`;
       }
     } else {
-      // Passed but not at target — increase BPM
       session.bpmController.onPass();
       updated.statusMessage = `Pass! BPM → ${session.bpmController.currentBpm}`;
       updated.state = "SEGMENT_PREVIEW";
     }
   } else {
-    // Failed
     session.bpmController.onFail();
     updated.streak = 0;
     updated.statusMessage = `Try again. Accuracy: ${Math.round(result.accuracy * 100)}% (need 80%). BPM: ${session.bpmController.currentBpm}`;
@@ -141,6 +174,45 @@ export function processResult(
   }
 
   return updated;
+}
+
+/** Start auto-learn mode: build curriculum and set first step active */
+export function startAutoLearn(
+  session: LearningSession,
+  startFromStep?: number
+): LearningSession {
+  if (session.segments.length === 0) return session;
+
+  const curriculum = buildCurriculum(session.segments);
+  const stepIndex = startFromStep ?? 0;
+  if (stepIndex >= curriculum.length) return session;
+
+  // Mark steps before startFromStep as passed (resuming)
+  for (let i = 0; i < stepIndex; i++) {
+    curriculum[i].status = "passed";
+  }
+  curriculum[stepIndex].status = "active";
+
+  const step = curriculum[stepIndex];
+  const combined = getCombinedSegment(session.segments, step.segmentRange);
+  const target = session.bpmController?.targetBpm ?? session.track?.bpm ?? 120;
+
+  return {
+    ...session,
+    state: "SEGMENT_PREVIEW",
+    activeSegment: combined,
+    metronomeEnabled: step.withClick,
+    bpmController: new BpmController(target),
+    autoLearn: {
+      curriculum,
+      currentStepIndex: stepIndex,
+      stepFailCount: 0,
+      relearning: false,
+      relearnSubIndex: 0,
+      relearnPassed: new Set(),
+    },
+    statusMessage: step.label,
+  };
 }
 
 /** Advance to the next segment */
@@ -158,6 +230,7 @@ export function nextSegment(session: LearningSession): LearningSession {
   return {
     ...session,
     currentSegmentIndex: nextIdx,
+    activeSegment: session.segments[nextIdx] ?? null,
     state: "SEGMENT_PREVIEW",
     bpmController: target
       ? new BpmController(target)
@@ -176,6 +249,7 @@ export function jumpToSegment(
   return {
     ...session,
     currentSegmentIndex: index,
+    activeSegment: session.segments[index] ?? null,
     state: "SEGMENT_PREVIEW",
     bpmController: target
       ? new BpmController(target)

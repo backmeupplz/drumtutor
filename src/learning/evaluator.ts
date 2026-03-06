@@ -51,8 +51,10 @@ export function evaluateSegment(
   const matchedHits = new Set<number>();
   const results: HitResult[] = [];
 
+  const maxMatchDistance = LATE_EARLY_WINDOW * beatDuration;
+
   for (const expected of scaledExpected) {
-    // Find best matching recorded hit
+    // Find best matching recorded hit within the timing window
     let bestIdx = -1;
     let bestOffset = Infinity;
 
@@ -63,6 +65,8 @@ export function evaluateSegment(
       if (!areNotesEquivalent(expected.note, hit.note)) continue;
 
       const offset = hit.time - expected.scaledTime;
+      // Only match within the timing window — prevents stealing other notes
+      if (Math.abs(offset) > maxMatchDistance) continue;
       if (Math.abs(offset) < Math.abs(bestOffset)) {
         bestOffset = offset;
         bestIdx = i;
