@@ -184,7 +184,6 @@ export function useLearningSession(engine: AudioEngine | null) {
     }
 
     if (metronomeOnRef.current) {
-      const beatDur = bpmToSecondsPerBeat(listenBpm);
       const timeSig = track.timeSignature;
       const origBeatDur = bpmToSecondsPerBeat(track.bpm);
       const firstBeatIdx = Math.ceil(fromTime / origBeatDur);
@@ -844,9 +843,6 @@ export function useLearningSession(engine: AudioEngine | null) {
       const segIdx = rangeStart + nextSubIdx;
       const seg = s.segments[segIdx];
       const target = s.bpmController?.targetBpm ?? s.track.bpm;
-      // Start at 50% BPM for re-learning
-      const relearnBpm = Math.round(target * 0.5);
-
       return {
         ...s,
         state: "SEGMENT_PREVIEW",

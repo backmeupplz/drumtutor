@@ -163,7 +163,7 @@ function drawPlayhead(
   startTime: number,
   endTime: number,
   canvasWidth: number,
-  canvasHeight: number
+  _canvasHeight: number
 ): void {
   const duration = endTime - startTime;
   if (duration <= 0) return;

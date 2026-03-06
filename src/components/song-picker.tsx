@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "preact/hooks";
 import type { DrumTrack } from "../engine/types";
-import { parseMidiFile, parseMidiFromUrl } from "../engine/midi-file";
+import { parseMidiFile } from "../engine/midi-file";
 import {
   saveRecentMidi,
   getRecentMidis,
