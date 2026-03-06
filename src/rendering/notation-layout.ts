@@ -6,19 +6,19 @@ import type { MidiNote } from "../engine/types";
 import { getDrumInfo } from "../utils/gm-drum-map";
 
 /** Vertical spacing between staff lines */
-export const LINE_SPACING = 14;
+export const LINE_SPACING = 18;
 
 /** Top margin before first staff line */
-export const STAFF_TOP = 50;
+export const STAFF_TOP = 40;
 
 /** Left margin for labels */
-export const LEFT_MARGIN = 60;
+export const LEFT_MARGIN = 50;
 
 /** Right margin */
 export const RIGHT_MARGIN = 20;
 
 /** Note head radius */
-export const NOTE_RADIUS = 6;
+export const NOTE_RADIUS = 7;
 
 /** Convert staff line position to Y coordinate */
 export function staffLineToY(staffLine: number): number {

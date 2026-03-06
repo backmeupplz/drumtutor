@@ -15,6 +15,18 @@ const CHOKE_GROUPS: number[][] = [
 
 const MAX_VOICES = 16;
 
+/** Notes that should remap to another note's sample when no sample exists */
+const NOTE_REMAP: Record<number, number> = {
+  35: 36, // Acoustic Bass Drum → Bass Drum 1
+  40: 38, // Electric Snare → Acoustic Snare (fallback)
+};
+
+/** Resolve a note to one that has a loaded sample */
+function resolveNote(note: number, kit: Map<number, any>): number {
+  if (kit.has(note)) return note;
+  return NOTE_REMAP[note] ?? note;
+}
+
 /** All sample filenames in the FreePats-GM kit */
 const SAMPLE_FILES = [
   "21_v1_rr1.wav",
@@ -121,15 +133,17 @@ export class AudioEngine {
   trigger(note: number, velocity: number): void {
     if (!this.loaded) return;
 
+    const resolved = resolveNote(note, this.kit);
+
     // Apply choke groups — stop any voice in same choke group
     for (const group of CHOKE_GROUPS) {
-      if (group.includes(note)) {
+      if (group.includes(resolved)) {
         this.chokeNotes(group);
         break;
       }
     }
 
-    const noteGroup = this.kit.get(note);
+    const noteGroup = this.kit.get(resolved);
     if (!noteGroup) return;
 
     const buffer = pickSample(noteGroup, velocity);
@@ -146,8 +160,8 @@ export class AudioEngine {
     source.buffer = buffer;
 
     const gainNode = this.ctx.createGain();
-    // Scale velocity to gain (quadratic curve for natural feel)
-    const vol = (velocity / 127) ** 2;
+    // Softer velocity curve: v^1.5 instead of v^2 for more audible low velocities
+    const vol = (velocity / 127) ** 1.5;
     gainNode.gain.setValueAtTime(vol, this.ctx.currentTime);
 
     source.connect(gainNode);
@@ -233,7 +247,8 @@ export class AudioEngine {
     velocity: number,
     time: number
   ): AudioBufferSourceNode | null {
-    const noteGroup = this.kit.get(note);
+    const resolved = resolveNote(note, this.kit);
+    const noteGroup = this.kit.get(resolved);
     if (!noteGroup) return null;
 
     const buffer = pickSample(noteGroup, velocity);
@@ -243,7 +258,7 @@ export class AudioEngine {
     source.buffer = buffer;
 
     const gainNode = this.ctx.createGain();
-    const vol = (velocity / 127) ** 2;
+    const vol = (velocity / 127) ** 1.5;
     gainNode.gain.setValueAtTime(vol, time);
 
     source.connect(gainNode);

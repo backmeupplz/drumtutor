@@ -1,19 +1,25 @@
 import type { LearningState } from "../engine/types";
 
+type Mode = "listen" | "practice";
+
 interface Props {
   state: LearningState;
   statusMessage: string;
   accuracy: number | null;
   streak: number;
   listenPaused?: boolean;
-  onStart: () => void;
   onPlay: () => void;
   onNext: () => void;
   onListen: () => void;
   onListenSegment: () => void;
   onPauseListen: () => void;
   onResumeListen: () => void;
-  onStopListen: () => void;
+  onSwitchToListen: () => void;
+  onSwitchToPractice: () => void;
+}
+
+function currentMode(state: LearningState): Mode {
+  return state === "LISTENING" ? "listen" : "practice";
 }
 
 function stateLabel(state: LearningState, paused?: boolean): string {
@@ -40,35 +46,43 @@ export function PracticeHud({
   accuracy,
   streak,
   listenPaused,
-  onStart,
   onPlay,
   onNext,
   onListen,
   onListenSegment,
   onPauseListen,
   onResumeListen,
-  onStopListen,
+  onSwitchToListen,
+  onSwitchToPractice,
 }: Props) {
+  const mode = currentMode(state);
+  const showModeToggle =
+    state !== "IDLE" &&
+    state !== "SONG_LOADED" &&
+    state !== "PREP_COUNT" &&
+    state !== "PLAYING" &&
+    state !== "SONG_COMPLETE";
+
   return (
     <div class="flex items-center gap-4 px-4 py-2 bg-[#141414] border-t border-b border-[#2a2a2a]">
-      <div class="flex items-center gap-2">
-        <span
-          class={`text-xs px-2 py-0.5 rounded ${
-            state === "PLAYING"
-              ? "bg-[#22c55e] text-[#0a0a0a]"
-              : state === "LISTENING" && !listenPaused
-                ? "bg-[#3b82f6] text-white"
-                : state === "SONG_COMPLETE"
-                  ? "bg-[#f59e0b] text-[#0a0a0a]"
-                  : "bg-[#2a2a2a] text-[#888]"
-          }`}
-        >
-          {stateLabel(state, listenPaused)}
-        </span>
-      </div>
+      {/* Status badge */}
+      <span
+        class={`text-xs px-2 py-0.5 rounded ${
+          state === "PLAYING"
+            ? "bg-[#22c55e] text-[#0a0a0a]"
+            : state === "LISTENING" && !listenPaused
+              ? "bg-[#3b82f6] text-white"
+              : state === "SONG_COMPLETE"
+                ? "bg-[#f59e0b] text-[#0a0a0a]"
+                : "bg-[#2a2a2a] text-[#888]"
+        }`}
+      >
+        {stateLabel(state, listenPaused)}
+      </span>
 
       <span class="text-sm text-[#888] flex-1 truncate">{statusMessage}</span>
 
+      {/* Accuracy / streak (practice only) */}
       {accuracy !== null && state !== "LISTENING" && (
         <div class="flex items-center gap-1 text-sm">
           <span class="text-[#888]">Acc:</span>
@@ -85,7 +99,6 @@ export function PracticeHud({
           </span>
         </div>
       )}
-
       {streak > 0 && state !== "LISTENING" && (
         <div class="flex items-center gap-1 text-sm">
           <span class="text-[#888]">Streak:</span>
@@ -93,79 +106,87 @@ export function PracticeHud({
         </div>
       )}
 
+      {/* Mode toggle (Listen / Practice) */}
+      {showModeToggle && (
+        <div class="flex rounded overflow-hidden border border-[#333]">
+          <button
+            class={`px-3 py-1 text-xs font-bold ${
+              mode === "listen"
+                ? "bg-[#3b82f6] text-white"
+                : "bg-[#1a1a1a] text-[#888] hover:text-[#e0e0e0]"
+            }`}
+            onClick={mode === "listen" ? undefined : onSwitchToListen}
+          >
+            Listen
+          </button>
+          <button
+            class={`px-3 py-1 text-xs font-bold ${
+              mode === "practice"
+                ? "bg-[#f59e0b] text-[#0a0a0a]"
+                : "bg-[#1a1a1a] text-[#888] hover:text-[#e0e0e0]"
+            }`}
+            onClick={mode === "practice" ? undefined : onSwitchToPractice}
+          >
+            Practice
+          </button>
+        </div>
+      )}
+
+      {/* Mode-specific controls */}
       <div class="flex gap-2">
+        {/* SONG_LOADED: initial entry buttons */}
         {state === "SONG_LOADED" && (
           <>
             <button
-              class="px-3 py-1 bg-[#2a2a2a] text-[#e0e0e0] rounded text-xs hover:bg-[#333]"
+              class="px-3 py-1 bg-[#3b82f6] text-white rounded text-xs font-bold hover:bg-[#2563eb]"
               onClick={onListen}
             >
               Listen
             </button>
             <button
               class="px-3 py-1 bg-[#f59e0b] text-[#0a0a0a] rounded text-xs font-bold hover:bg-[#d97706]"
-              onClick={onStart}
+              onClick={onSwitchToPractice}
             >
               Practice
             </button>
           </>
         )}
 
+        {/* LISTENING: Play/Pause toggle */}
         {state === "LISTENING" && (
-          <>
-            {listenPaused ? (
-              <button
-                class="px-3 py-1 bg-[#3b82f6] text-white rounded text-xs font-bold hover:bg-[#2563eb]"
-                onClick={onResumeListen}
-              >
-                Resume
-              </button>
-            ) : (
-              <button
-                class="px-3 py-1 bg-[#2a2a2a] text-[#e0e0e0] rounded text-xs hover:bg-[#333]"
-                onClick={onPauseListen}
-              >
-                Pause
-              </button>
-            )}
+          listenPaused ? (
             <button
-              class="px-3 py-1 bg-[#2a2a2a] text-[#888] rounded text-xs hover:bg-[#333] hover:text-[#e0e0e0]"
-              onClick={onStopListen}
-            >
-              Stop
-            </button>
-          </>
-        )}
-
-        {state === "SEGMENT_PREVIEW" && (
-          <>
-            <button
-              class="px-3 py-1 bg-[#2a2a2a] text-[#e0e0e0] rounded text-xs hover:bg-[#333]"
-              onClick={onListenSegment}
-            >
-              Listen
-            </button>
-            <button
-              class="px-3 py-1 bg-[#22c55e] text-[#0a0a0a] rounded text-xs font-bold hover:bg-[#16a34a]"
-              onClick={onPlay}
+              class="px-3 py-1 bg-[#3b82f6] text-white rounded text-xs font-bold hover:bg-[#2563eb]"
+              onClick={onResumeListen}
             >
               Play
             </button>
-          </>
+          ) : (
+            <button
+              class="px-3 py-1 bg-[#2a2a2a] text-[#e0e0e0] rounded text-xs hover:bg-[#333]"
+              onClick={onPauseListen}
+            >
+              Pause
+            </button>
+          )
         )}
-        {(state === "EVALUATE" || state === "NEXT_SEGMENT") && (
+
+        {/* SEGMENT_PREVIEW / EVALUATE / NEXT_SEGMENT: Preview + Play */}
+        {(state === "SEGMENT_PREVIEW" ||
+          state === "EVALUATE" ||
+          state === "NEXT_SEGMENT") && (
           <>
             <button
               class="px-3 py-1 bg-[#2a2a2a] text-[#e0e0e0] rounded text-xs hover:bg-[#333]"
               onClick={onListenSegment}
             >
-              Listen
+              Preview
             </button>
             <button
               class="px-3 py-1 bg-[#22c55e] text-[#0a0a0a] rounded text-xs font-bold hover:bg-[#16a34a]"
               onClick={onPlay}
             >
-              Retry
+              {state === "EVALUATE" || state === "NEXT_SEGMENT" ? "Retry" : "Play"}
             </button>
             {state === "NEXT_SEGMENT" && (
               <button
@@ -177,6 +198,8 @@ export function PracticeHud({
             )}
           </>
         )}
+
+        {/* Exam states */}
         {(state === "EXAM_WITH_CLICK" || state === "EXAM_WITHOUT_CLICK") && (
           <button
             class="px-3 py-1 bg-[#22c55e] text-[#0a0a0a] rounded text-xs font-bold hover:bg-[#16a34a]"

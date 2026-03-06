@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState, useCallback } from "preact/hooks";
 import type { MidiNote, HitResult } from "../engine/types";
 import { renderNotation } from "../rendering/drum-notation";
-import { layoutNotes, NOTE_RADIUS } from "../rendering/notation-layout";
+import { layoutNotes, NOTE_RADIUS, LEFT_MARGIN, RIGHT_MARGIN } from "../rendering/notation-layout";
 import { getDrumInfo } from "../utils/gm-drum-map";
 
 interface Props {
@@ -107,7 +107,9 @@ export function SegmentView({
       const canvas = canvasRef.current;
       if (!canvas) return;
       const rect = canvas.getBoundingClientRect();
-      const frac = (e.clientX - rect.left) / rect.width;
+      const x = e.clientX - rect.left;
+      const usable = rect.width - LEFT_MARGIN - RIGHT_MARGIN;
+      const frac = Math.max(0, Math.min(1, (x - LEFT_MARGIN) / usable));
       const time = startTime + frac * (endTime - startTime);
       onTimeClick(time);
     },

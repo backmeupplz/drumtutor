@@ -59,6 +59,7 @@ export const GM_DRUM_MAP: Record<number, DrumInfo> = {
 export function areNotesEquivalent(a: number, b: number): boolean {
   if (a === b) return true;
   const pairs: [number, number][] = [
+    [35, 36], // Acoustic Bass Drum / Bass Drum 1
     [38, 40], // Acoustic/Electric Snare
     [41, 43], // Floor Tom variants
     [45, 47], // Low/Low-Mid Tom

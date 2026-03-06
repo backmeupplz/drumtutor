@@ -3,7 +3,6 @@ import type { DrumTrack } from "./engine/types";
 import { useAudioEngine } from "./hooks/use-audio-engine";
 import { useMidiInput } from "./hooks/use-midi-input";
 import { useLearningSession } from "./hooks/use-learning-session";
-import { ConnectScreen } from "./components/connect-screen";
 import { SongPicker } from "./components/song-picker";
 import { SegmentView } from "./components/segment-view";
 import { SongOverview } from "./components/song-overview";
@@ -28,7 +27,6 @@ const LISTEN_WINDOW_MEASURES = MEASURES_PER_ROW * LISTEN_ROWS;
 
 export function App() {
   const audio = useAudioEngine();
-  const [audioInitialized, setAudioInitialized] = useState(false);
 
   // Playhead animation
   const [playheadTime, setPlayheadTime] = useState<number | undefined>(undefined);
@@ -49,17 +47,51 @@ export function App() {
   const learningRef = useRef(learning);
   learningRef.current = learning;
 
-  const initAudio = useCallback(async () => {
-    await audio.init();
-    setAudioInitialized(true);
-  }, [audio.init]);
+  // Flag: auto-enter listen mode after song loads
+  const autoListenRef = useRef(false);
 
+  // Auto-init audio on song load, then auto-listen
   const handleSongLoad = useCallback(
-    (track: DrumTrack) => {
+    async (track: DrumTrack) => {
+      if (!audio.loaded) await audio.init();
+      autoListenRef.current = true;
       learning.load(track);
     },
-    [learning.load]
+    [audio, learning.load]
   );
+
+  // Auto-enter listen mode when song loads
+  useEffect(() => {
+    if (learning.session.state === "SONG_LOADED" && autoListenRef.current) {
+      autoListenRef.current = false;
+      learning.listen(0);
+    }
+  }, [learning.session.state]);
+
+  // Spacebar pauses/resumes listen mode
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== "Space") return;
+      // Don't intercept when typing in an input
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      e.preventDefault();
+
+      const s = learningRef.current;
+      if (s.session.state === "LISTENING") {
+        if (s.listenPaused) s.resumeListen();
+        else s.pauseListen();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Auto-init audio on MIDI detect
+  const handleMidiInit = useCallback(async () => {
+    if (!audio.loaded) await audio.init();
+    await midi.init();
+  }, [audio, midi.init]);
 
   // Animate playhead
   useEffect(() => {
@@ -116,21 +148,33 @@ export function App() {
     return () => cancelAnimationFrame(rafRef.current);
   }, [learning.session.state, learning.listenPaused, learning.segmentListening]);
 
-  const [metronomeOn, setMetronomeOn] = useState(true);
   const segment = learning.currentSegment;
   const track = learning.session.track;
 
-  // Listen window: compute 2 rows of 4 measures each around playhead
+  // Listen window: page-based scrolling
+  const listenWindowRef = useRef<{ start: number; end: number } | null>(null);
+
   const listenRows = useMemo(() => {
-    if (!track || learning.session.state !== "LISTENING") return null;
+    if (!track || learning.session.state !== "LISTENING") {
+      listenWindowRef.current = null;
+      return null;
+    }
 
     const measDur = measureDuration(track.bpm, track.timeSignature);
     const pos = playheadTime ?? 0;
+    const pageMeasures = MEASURES_PER_ROW * LISTEN_ROWS;
+    const pageDur = pageMeasures * measDur;
 
-    // Place playhead in first row with 1 measure lead-in
-    const rawStart = pos - measDur;
-    const startMeasure = Math.max(0, Math.floor(rawStart / measDur));
-    const windowStart = startMeasure * measDur;
+    let windowStart: number;
+    const cur = listenWindowRef.current;
+
+    if (cur && pos >= cur.start && pos < cur.end) {
+      windowStart = cur.start;
+    } else {
+      const pagIndex = Math.max(0, Math.floor(pos / pageDur));
+      windowStart = pagIndex * pageDur;
+      listenWindowRef.current = { start: windowStart, end: windowStart + pageDur };
+    }
 
     const rows: { start: number; end: number; notes: typeof track.notes }[] = [];
     for (let r = 0; r < LISTEN_ROWS; r++) {
@@ -145,42 +189,41 @@ export function App() {
     return rows;
   }, [track, learning.session.state, playheadTime]);
 
-  // Seek helpers for listen mode
   const seekRelative = useCallback(
     (measures: number) => {
       if (!track) return;
       const measDur = measureDuration(track.bpm, track.timeSignature);
       const pos = learning.getListenPosition();
-      learning.seekListen(pos + measures * measDur);
-      // Update playhead immediately when paused
+      const newPos = pos + measures * measDur;
+      listenWindowRef.current = null;
+      learning.seekListen(newPos);
       if (learning.listenPaused) {
-        setPlayheadTime(pos + measures * measDur);
+        setPlayheadTime(newPos);
       }
     },
     [track, learning]
   );
 
-  // Listen-mode: click on canvas seeks to that time
   const handleListenTimeClick = useCallback(
     (time: number) => {
+      listenWindowRef.current = null;
       learning.seekListen(time);
       setPlayheadTime(time);
     },
     [learning]
   );
 
-  // Listen-mode: click on segment in overview seeks to its start
   const handleListenSegmentSelect = useCallback(
     (index: number) => {
       const seg = learning.session.segments[index];
       if (!seg) return;
+      listenWindowRef.current = null;
       learning.seekListen(seg.startTime);
       setPlayheadTime(seg.startTime);
     },
     [learning]
   );
 
-  // Compute which segment the playhead is in during listen mode
   const listenSegmentIndex = useMemo(() => {
     if (learning.session.state !== "LISTENING" || playheadTime == null) return -1;
     const segs = learning.session.segments;
@@ -190,22 +233,20 @@ export function App() {
     return 0;
   }, [learning.session.state, learning.session.segments, playheadTime]);
 
-  if (!audioInitialized) {
-    return (
-      <div class="flex flex-col items-center justify-center h-full gap-6">
-        <h1 class="text-3xl font-bold text-[#f59e0b]">drumtutor</h1>
-        <p class="text-[#888] text-sm">
-          Browser-based drum learning with your e-kit
-        </p>
-        <button
-          class="px-6 py-3 bg-[#f59e0b] text-[#0a0a0a] rounded font-bold text-lg hover:bg-[#d97706]"
-          onClick={initAudio}
-        >
-          Start
-        </button>
-      </div>
-    );
-  }
+  const handleSwitchToPractice = useCallback(() => {
+    if (learning.session.state === "SONG_LOADED") {
+      learning.switchToPractice(0);
+      return;
+    }
+    const idx = listenSegmentIndex >= 0 ? listenSegmentIndex : 0;
+    learning.switchToPractice(idx);
+  }, [learning, listenSegmentIndex]);
+
+  const handleSwitchToListen = useCallback(() => {
+    const seg = learning.currentSegment;
+    listenWindowRef.current = null;
+    learning.listen(seg?.startTime ?? 0);
+  }, [learning]);
 
   return (
     <div class="flex flex-col h-full">
@@ -214,53 +255,36 @@ export function App() {
         targetBpm={learning.targetBpm}
         segmentIndex={learning.session.currentSegmentIndex}
         totalSegments={learning.session.segments.length}
-        metronomeEnabled={metronomeOn}
+        metronomeEnabled={learning.metronomeOn}
         state={learning.session.state}
-        onToggleMetronome={() => setMetronomeOn(!metronomeOn)}
+        midiConnected={midi.connected}
+        midiDeviceName={midi.deviceName}
+        midiDevices={midi.devices}
+        midiError={midi.error}
+        onMidiInit={handleMidiInit}
+        onMidiConnect={midi.connect}
+        onMidiDisconnect={midi.disconnect}
+        onToggleMetronome={learning.toggleMetronome}
+        onSetTargetBpm={learning.setTargetBpm}
         onReset={learning.stop}
       />
 
       <div class="flex-1 flex flex-col overflow-hidden">
-        {/* MIDI Connection + Song Loading */}
-        {(learning.session.state === "IDLE" ||
-          learning.session.state === "SONG_LOADED") && (
+        {/* Song picker — only in IDLE */}
+        {learning.session.state === "IDLE" && (
           <div class="flex flex-col gap-4 p-4">
-            <ConnectScreen
-              devices={midi.devices}
-              connected={midi.connected}
-              deviceName={midi.deviceName}
-              error={midi.error}
-              onInit={async () => { await midi.init(); }}
-              onConnect={midi.connect}
-              onDisconnect={midi.disconnect}
-            />
-
-            {learning.session.state === "IDLE" && (
-              <SongPicker onLoad={handleSongLoad} />
-            )}
-
-            {learning.session.state === "SONG_LOADED" && track && (
-              <div class="p-4 bg-[#141414] border border-[#2a2a2a] rounded max-w-md mx-auto text-sm">
-                <div class="text-[#f59e0b] font-bold mb-2">{track.name}</div>
-                <div class="text-[#888] space-y-1">
-                  <div>BPM: {track.bpm} | Time: {track.timeSignature.join("/")}</div>
-                  <div>Notes: {track.notes.length} | Segments: {learning.session.segments.length}</div>
-                  <div>Duration: {formatTime(track.durationSeconds)}</div>
-                </div>
-              </div>
-            )}
+            <SongPicker onLoad={handleSongLoad} />
           </div>
         )}
 
         {/* Windowed listen view — 2 rows of 4 measures */}
         {learning.session.state === "LISTENING" && track && listenRows && (
           <div class="flex-1 flex flex-col p-2 min-h-0">
-            {/* Position / time bar */}
             <div class="flex items-center gap-3 px-2 pb-1 text-xs text-[#888]">
               <span>{formatTime(playheadTime ?? 0)}</span>
               <div class="flex-1 h-1.5 bg-[#2a2a2a] rounded relative cursor-pointer"
                 onClick={(e) => {
-                  const rect = (e.target as HTMLElement).getBoundingClientRect();
+                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
                   const frac = (e.clientX - rect.left) / rect.width;
                   const t = frac * track.durationSeconds;
                   learning.seekListen(t);
@@ -276,7 +300,6 @@ export function App() {
               <span>{formatTime(track.durationSeconds)}</span>
             </div>
 
-            {/* 2 notation rows */}
             <div class="flex-1 flex flex-col gap-0 min-h-0">
               {listenRows.map((row, i) => (
                 <div key={i} class="flex-1 min-h-0">
@@ -293,7 +316,6 @@ export function App() {
               ))}
             </div>
 
-            {/* Scroll controls when paused */}
             {learning.listenPaused && (
               <div class="flex items-center justify-center gap-3 pt-1">
                 <button
@@ -338,7 +360,11 @@ export function App() {
                 bpm={track.bpm}
                 timeSig={track.timeSignature}
                 playheadTime={playheadTime}
-                hitResults={learning.hitResults}
+                hitResults={
+                  learning.session.state === "PLAYING" || learning.session.state === "EVALUATE"
+                    ? learning.hitResults
+                    : undefined
+                }
               />
             </div>
           )}
@@ -350,14 +376,14 @@ export function App() {
         accuracy={learning.session.lastResult?.accuracy ?? null}
         streak={learning.session.streak}
         listenPaused={learning.listenPaused}
-        onStart={learning.start}
         onPlay={learning.beginPlaying}
         onNext={learning.goNext}
         onListen={learning.listen}
         onListenSegment={learning.listenSegment}
         onPauseListen={learning.pauseListen}
         onResumeListen={learning.resumeListen}
-        onStopListen={learning.stopListen}
+        onSwitchToListen={handleSwitchToListen}
+        onSwitchToPractice={handleSwitchToPractice}
       />
 
       {learning.session.segments.length > 0 && (

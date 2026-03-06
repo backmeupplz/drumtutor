@@ -13,6 +13,7 @@ import {
   NOTE_RADIUS,
   type NotePosition,
 } from "./notation-layout";
+import { getDrumInfo } from "../utils/gm-drum-map";
 import {
   HIT_COLORS,
   NOTE_COLOR_DEFAULT,
@@ -39,26 +40,23 @@ function drawStaff(
   }
 }
 
-/** Draw instrument labels on the left */
-function drawLabels(ctx: CanvasRenderingContext2D): void {
+/** Draw instrument labels on the left — only for instruments present in notes */
+function drawLabels(ctx: CanvasRenderingContext2D, notes: MidiNote[]): void {
   ctx.fillStyle = "#666";
   ctx.font = "10px monospace";
   ctx.textAlign = "right";
   ctx.textBaseline = "middle";
 
-  const labels: [string, number][] = [
-    ["CC", -1],
-    ["RC", 0],
-    ["HH", -0.5],
-    ["SN", 3],
-    ["HT", 2.5],
-    ["MT", 4],
-    ["FT", 5],
-    ["BD", 6],
-    ["PH", 7],
-  ];
+  // Collect unique staff positions from actual notes
+  const seen = new Map<string, number>(); // shortName → staffLine
+  for (const n of notes) {
+    const info = getDrumInfo(n.note);
+    if (!seen.has(info.shortName)) {
+      seen.set(info.shortName, info.staffLine);
+    }
+  }
 
-  for (const [label, line] of labels) {
+  for (const [label, line] of seen) {
     const y = STAFF_TOP + line * LINE_SPACING;
     ctx.fillText(label, LEFT_MARGIN - 15, y);
   }
@@ -174,12 +172,15 @@ function drawPlayhead(
   const usableWidth = canvasWidth - LEFT_MARGIN - RIGHT_MARGIN;
   const x = LEFT_MARGIN + fraction * usableWidth;
 
+  const top = STAFF_TOP - LINE_SPACING * 2;
+  const bottom = STAFF_TOP + LINE_SPACING * 8;
+
   ctx.strokeStyle = PLAYHEAD_COLOR;
   ctx.lineWidth = 2;
   ctx.globalAlpha = 0.8;
   ctx.beginPath();
-  ctx.moveTo(x, 0);
-  ctx.lineTo(x, canvasHeight);
+  ctx.moveTo(x, top);
+  ctx.lineTo(x, bottom);
   ctx.stroke();
   ctx.globalAlpha = 1;
 }
@@ -217,7 +218,7 @@ export function renderNotation(
 
   // Staff
   drawStaff(ctx, w);
-  drawLabels(ctx);
+  drawLabels(ctx, options.notes);
 
   // Bar lines
   drawBarLines(ctx, options.startTime, options.endTime, options.bpm, options.timeSig, w);
@@ -232,6 +233,13 @@ export function renderNotation(
     if (options.hitResults?.has(i)) {
       const result = options.hitResults.get(i)!;
       color = HIT_COLORS[result.quality];
+    } else if (
+      options.hitResults &&
+      options.playheadTime !== undefined &&
+      pos.time < options.playheadTime
+    ) {
+      // Playhead passed this note without a hit — mark as miss
+      color = HIT_COLORS.miss;
     }
 
     drawNote(ctx, pos, color);
