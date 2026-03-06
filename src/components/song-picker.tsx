@@ -1,6 +1,12 @@
-import { useState, useRef } from "preact/hooks";
+import { useState, useRef, useEffect } from "preact/hooks";
 import type { DrumTrack } from "../engine/types";
-import { parseMidiFromFile, parseMidiFromUrl } from "../engine/midi-file";
+import { parseMidiFile, parseMidiFromUrl } from "../engine/midi-file";
+import {
+  saveRecentMidi,
+  getRecentMidis,
+  loadRecentMidi,
+  deleteRecentMidi,
+} from "../engine/midi-storage";
 
 interface Props {
   onLoad: (track: DrumTrack) => void;
@@ -10,7 +16,14 @@ export function SongPicker({ onLoad }: Props) {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [recents, setRecents] = useState<
+    { filename: string; timestamp: number }[]
+  >([]);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    getRecentMidis().then(setRecents).catch(() => {});
+  }, []);
 
   const handleFile = async (e: Event) => {
     const input = e.target as HTMLInputElement;
@@ -20,7 +33,10 @@ export function SongPicker({ onLoad }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const track = await parseMidiFromFile(file);
+      const buffer = await file.arrayBuffer();
+      const track = parseMidiFile(buffer);
+      await saveRecentMidi(file.name, buffer);
+      setRecents(await getRecentMidis());
       onLoad(track);
     } catch (err: any) {
       setError(err.message);
@@ -33,7 +49,16 @@ export function SongPicker({ onLoad }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const track = await parseMidiFromUrl(url.trim());
+      const trimmed = url.trim();
+      const response = await fetch(trimmed);
+      if (!response.ok)
+        throw new Error(`Failed to fetch: ${response.statusText}`);
+      const buffer = await response.arrayBuffer();
+      const track = parseMidiFile(buffer);
+      const filename =
+        decodeURIComponent(trimmed.split("/").pop() || "url-file.mid");
+      await saveRecentMidi(filename, buffer);
+      setRecents(await getRecentMidis());
       onLoad(track);
     } catch (err: any) {
       setError(err.message);
@@ -41,11 +66,59 @@ export function SongPicker({ onLoad }: Props) {
     setLoading(false);
   };
 
+  const handleRecent = async (filename: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const buffer = await loadRecentMidi(filename);
+      const track = parseMidiFile(buffer);
+      await saveRecentMidi(filename, buffer); // bump timestamp
+      setRecents(await getRecentMidis());
+      onLoad(track);
+    } catch (err: any) {
+      setError(err.message);
+    }
+    setLoading(false);
+  };
+
+  const handleDeleteRecent = async (
+    e: Event,
+    filename: string
+  ) => {
+    e.stopPropagation();
+    await deleteRecentMidi(filename);
+    setRecents(await getRecentMidis());
+  };
+
   return (
     <div class="flex flex-col gap-4 p-6 bg-[#141414] border border-[#2a2a2a] rounded max-w-md mx-auto">
       <h2 class="text-lg text-[#f59e0b]">Load MIDI File</h2>
 
       {error && <p class="text-sm text-[#ef4444]">{error}</p>}
+
+      {recents.length > 0 && (
+        <div class="flex flex-col gap-2">
+          <p class="text-xs text-[#888]">Recent files</p>
+          <div class="flex flex-wrap gap-2">
+            {recents.map((r) => (
+              <button
+                key={r.filename}
+                class="group flex items-center gap-1 px-3 py-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded text-xs text-[#e0e0e0] hover:border-[#f59e0b] hover:text-[#f59e0b] transition-colors"
+                onClick={() => handleRecent(r.filename)}
+                disabled={loading}
+              >
+                <span class="truncate max-w-[160px]">{r.filename}</span>
+                <span
+                  class="ml-1 opacity-0 group-hover:opacity-100 text-[#888] hover:text-[#ef4444] transition-opacity"
+                  onClick={(e) => handleDeleteRecent(e, r.filename)}
+                >
+                  ×
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div class="flex flex-col gap-2">
         <input

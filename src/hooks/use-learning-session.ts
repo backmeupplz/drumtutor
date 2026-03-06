@@ -274,11 +274,12 @@ export function useLearningSession(engine: AudioEngine | null) {
     setSession((s) => {
       if (!s.track) return s;
       const idx = Math.max(0, Math.min(segmentIndex, s.segments.length - 1));
+      const target = s.bpmController?.targetBpm ?? s.track.bpm;
       return {
         ...s,
         currentSegmentIndex: idx,
         state: "SEGMENT_PREVIEW",
-        bpmController: new BpmController(s.track.bpm),
+        bpmController: new BpmController(target),
         statusMessage: `Segment ${idx + 1}: Preview`,
       };
     });
@@ -412,7 +413,7 @@ export function useLearningSession(engine: AudioEngine | null) {
 
         const seg = s.segments[s.currentSegmentIndex];
         if (seg && s.bpmController) {
-          const bpmRatio = (s.bpmController.targetBpm) / s.bpmController.currentBpm;
+          const bpmRatio = s.track!.bpm / s.bpmController.currentBpm;
           const segDuration = (seg.endTime - seg.startTime) * bpmRatio;
 
           if (metronomeOnRef.current) {

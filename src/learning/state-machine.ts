@@ -154,12 +154,13 @@ export function nextSegment(session: LearningSession): LearningSession {
     };
   }
 
+  const target = session.bpmController?.targetBpm ?? session.track?.bpm;
   return {
     ...session,
     currentSegmentIndex: nextIdx,
     state: "SEGMENT_PREVIEW",
-    bpmController: session.track
-      ? new BpmController(session.track.bpm)
+    bpmController: target
+      ? new BpmController(target)
       : session.bpmController,
     statusMessage: `Segment ${nextIdx + 1}/${session.segments.length}`,
   };
@@ -171,12 +172,13 @@ export function jumpToSegment(
   index: number
 ): LearningSession {
   if (index < 0 || index >= session.segments.length) return session;
+  const target = session.bpmController?.targetBpm ?? session.track?.bpm;
   return {
     ...session,
     currentSegmentIndex: index,
     state: "SEGMENT_PREVIEW",
-    bpmController: session.track
-      ? new BpmController(session.track.bpm)
+    bpmController: target
+      ? new BpmController(target)
       : session.bpmController,
     statusMessage: `Jumped to segment ${index + 1}`,
   };
